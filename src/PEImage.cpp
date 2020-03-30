@@ -225,6 +225,19 @@ bool PEImage::replaceDebugSection (const void* data, int datalen, bool initCV)
 	IMGHDR(OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress) = lastVirtualAddress + datalen;
 	IMGHDR(OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size) = sizeof(IMAGE_DEBUG_DIRECTORY);
 
+	// invalidate the symbol table pointer if it points outside of the data to be copied
+	IMAGE_DOS_HEADER *dos = DPV<IMAGE_DOS_HEADER>(0);
+	if(dos && dos->e_magic == IMAGE_DOS_SIGNATURE)
+	{
+		// The 32-bit and 64-bit headers are identical in the FileHeader part, so we just use the 32-bit one
+		IMAGE_NT_HEADERS32* hdr = DPV<IMAGE_NT_HEADERS32>(dos->e_lfanew);
+		if(hdr && hdr->FileHeader.PointerToSymbolTable >= dump_total_len)
+		{
+			hdr->FileHeader.PointerToSymbolTable = 0;
+			hdr->FileHeader.NumberOfSymbols = 0;
+		}
+	}
+
 	// append debug data chunk to existing file image
 	memcpy(newdata, dump_base, dump_total_len);
 	memset(newdata + dump_total_len, 0, fill);
@@ -770,17 +783,37 @@ const char* PEImage::findSectionSymbolName(int s) const
         return t_findSectionSymbolName<IMAGE_SYMBOL> (s);
 }
 
-int PEImage::findSymbol(const char* name, unsigned long& off) const
+bool symbolMatches(const char* name, const char* symname, bool& dllimport)
+{
+	if (strcmp(symname, name) == 0)
+		return true;
+	if (symname[0] != '_')
+		return false;
+	if (strcmp(symname + 1, name) == 0)
+		return true;
+
+	if (strncmp(symname + 1, "_imp_", 5) == 0)
+		symname += 6;
+	else
+		return false;
+	if (strcmp(symname, name) != 0 && (symname[0] != '_' || strcmp(symname + 1, name) != 0))
+		return false;
+	dllimport = true;
+	return true;
+}
+
+int PEImage::findSymbol(const char* name, unsigned long& off, bool& dllimport) const
 {
     int sizeof_sym = bigobj ? sizeof(IMAGE_SYMBOL_EX) : IMAGE_SIZEOF_SYMBOL;
 	for(int i = 0; i < nsym; i++)
 	{
 		IMAGE_SYMBOL* sym = (IMAGE_SYMBOL*) (symtable + i * sizeof_sym);
 		const char* symname = sym->N.Name.Short == 0 ? strtable + sym->N.Name.Long : (char*)sym->N.ShortName;
-		if(strcmp(symname, name) == 0 || (symname[0] == '_' && strcmp(symname + 1, name) == 0))
+		int seg = bigobj ? ((IMAGE_SYMBOL_EX*)sym)->SectionNumber : sym->SectionNumber;
+		if(seg && symbolMatches(name, symname, dllimport))
 		{
 			off = sym->Value;
-			return bigobj ? ((IMAGE_SYMBOL_EX*)sym)->SectionNumber : sym->SectionNumber;
+			return seg - 1;
 		}
 		i += sym->NumberOfAuxSymbols;
 	}

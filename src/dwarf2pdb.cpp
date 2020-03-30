@@ -1584,9 +1584,14 @@ bool CV2PDB::createTypes()
 				{
 					int seg = -1;
 					unsigned long segOff;
+					bool dllimport = false;
 					if (id.location.type == Invalid && id.external && id.linkage_name)
 					{
-						seg = img.findSymbol(id.linkage_name, segOff);
+						seg = img.findSymbol(id.linkage_name, segOff, dllimport);
+					}
+					else if (id.location.type == Invalid && id.external)
+					{
+						seg = img.findSymbol(id.name, segOff, dllimport);
 					}
 					else
 					{
@@ -1602,6 +1607,12 @@ bool CV2PDB::createTypes()
 					if (seg >= 0)
 					{
 						int type = getTypeByDWARFPtr(cu, id.type);
+						if (dllimport)
+						{
+							checkDWARFTypeAlloc(100);
+							cbDwarfTypes += addPointerType(dwarfTypes + cbDwarfTypes, type, pointerAttr | 0x20); // needs to be deduplicted?
+							type = nextDwarfType++;
+						}
 						appendGlobalVar(id.name, type, seg + 1, segOff);
 						int rc = mod->AddPublic2(id.name, seg + 1, segOff, type);
 					}
@@ -1641,7 +1652,7 @@ bool CV2PDB::createDWARFModules()
 	for (int s = 0; s < img.countSections(); s++)
 	{
 		const IMAGE_SECTION_HEADER& sec = img.getSection(s);
-		int rc = dbi->AddSec(s + 1, 0x10d, 0, sec.SizeOfRawData);
+		int rc = dbi->AddSec(s + 1, 0x10d, 0, sec.Misc.VirtualSize);
 		if (rc <= 0)
 			return setError("cannot add section");
 	}
